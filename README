@@ -1,0 +1,190 @@
+Steps to run the program - 
+
+1. unzip the file and cd into the directory containing scheduler.cc
+2. make clean
+3. make sched
+
+The output binary will be named sched and will be created in the same folder as the source file.
+
+
+NOTE: (Use following only in case required.)
+Sometime when I try to run on linserv, I got following problem 
+./sched: /lib64/libstdc++.so.6: version CXXABI_1.3.9' not found (required by ./sched)
+./sched: /lib64/libstdc++.so.6: version GLIBCXX_3.4.26' not found (required by ./sched)
+./sched: /lib64/libstdc++.so.6: version `GLIBCXX_3.4.21' not found (required by ./sched)
+
+I have compiled using -static in makefile to prevent missing right c++ library version being loaded as these library should be statically linked, 
+So I am expecting this error not to appear. But in case any issue happens, compile the file manually using following command-
+
+g++-9.1 -std=c++17 -g -static scheduler.cc -o sched
+
+Please note above case is needed only in case the binary built from "make sched" doesn't load the required library files for compile and all the test case fails.
+I have already fixed this issue in my makefile and tested it.
+
+Implementation Details and Design?
+
+Language: C++17 (for using smart pointers and auto)
+
+Key constructs -
+
+* namespace process: Contains PCB and Process related definitions.
+
+* enum ProcessState: Enum for process life cycle. (Except for PREEMPT state
+                     which is added for clarity and is implemented exactly
+                     as READY state).
+
+* enum ProcessTransition: Enum for transition states.
+
+* class Process : Stores PCB. All information related to running state of
+                  process and stats. This class doesn't allow copy/assign 
+                  based construction and enforces use of ProcessPtr which is a
+                  reference counted shared_ptr<Process> to access this Process.
+
+* namespace simulation: Contains simulation related defintions.
+
+* class Simulation: Simulation controller. Contains the main event transition 
+                    loop.
+
+* class DES: Generic class for storing timestamp ordered events. Implements
+             event queue and also enforces logic for ordering events arriving
+             at the same timestamp.
+
+* class Event: Class that hold process pointer, timestamp and next state.
+               An Event captures the notion of state transition for a process.
+               Simulation will remain in the current state unless there is
+               a event to change it. Simulation will run as long as there
+               is any Event in DES.
+               In this simulation all event are generated synchronously (or
+               at the start of the simulation). i.e event are added only
+               from simulation while processing other events.
+
+* namespace scheduler: Contains implementation of all scheduler.
+
+* class SchedulerFactory: Makes scheduler given a spec.
+
+* class Scheduler: Abstract class with 3 methods to override.
+                   name(): Scheduler name
+                   AddProcess(): Add a process to ready queue.
+                   GetNextProcess(): Returns a process to run.
+                   Calling scheduler may change internal states of a process.
+
+* class NonPriorityScheduler: Abstract class for scheduler with single ready
+                              queue. Parent of FCFC, LCFS, SRTF and RR
+                              scheduler.
+
+* class FCFSScheduler: Implements FCFS scheduler (adds process to the end).
+
+* class LCFSScheduler: Implements LCFS scheduler (adds process to the front).
+
+* class SRTFScheduler: Implements SRTF scheduler (using remaining time).
+
+* class RoundRobinScheduler: Implements RoundRobin scheduler.
+                             Sets run interval for the process and pre-empt
+                             after quantum expire.
+
+* class PriorityScheduler: Implements PRIO scheduler. AddProcess will decay
+                           priority if the process was pre-empted by
+                           moving the process to the dynamic priority based
+                           queue. If priority decreases below 0, it will
+                           be pushed into expired queue. During GetNextProcess
+                           it will pull highest priority process from active
+                           queue. If active queue is empty, expired queue
+                           will become active queue.
+
+* class PrePriorityScheduler: Implements PREPRIO scheduler. If during
+                              AddProcess, the process has higher priority,
+                              it will preempt currently running process.
+
+* class PrioProcessQueue: Data Structure to implement multiple priority
+                          FCFS queue. Implemented as vector of deque.
+                          Also stores a vector<bool> to quickly find location
+                          of non empty queue.
+
+* main: Starts the simulation.
+
+
+
+Implementation Caveats:
+
+* Implementation is not thread safe and can't be extended to Discrete Event
+  Simulation involving asynchronous event generation. All scheduler events
+  are generated when processing other events, so thread safety isn't required.
+
+* Doesn't perform any input/size validation. Empty inputfile will result in
+  all stats being nan.
+
+* Doesn't perform validation on random file. Badly formatted random file will
+  throw exception.
+
+* Performs basic validation of input flags only. Malformed scheduler flags
+  will create null scheduler and will segemntation fault.
+
+* Cases when cpu burst or io burst of 0 will result in Floating Point Exception.
+
+
+Note on debugging:
+
+Each object implement a DebugStr() function which returns a string and
+it is used to TRACE scheduler.
+
+
+How to run scheduler?
+
+USAGE: sched [-v] [-t] [-e] [-s<schedspec>] <inputfile> <randfile>
+
+./sched -sF input0 rfile
+FCFS
+0000:    0  100   10   10 2 |   201   201   101     0
+0001:  500  100   20   10 4 |   627   127    27     0
+SUM: 627 31.90 20.41 164.00 0.00 0.319
+
+
+[-v] will add verbose output. e.g like below
+
+./sched -sF -v input0 rfile
+0 0 0: CREATED -> READY
+0 0 0: READY -> RUNNG cb=8 rem=100 prio=1
+8 0 8: RUNNG -> BLOCK  ib=2 rem=92
+10 0 2: BLOCK -> READY
+10 0 0: READY -> RUNNG cb=10 rem=92 prio=1
+20 0 10: RUNNG -> BLOCK  ib=7 rem=82
+27 0 7: BLOCK -> READY
+27 0 0: READY -> RUNNG cb=7 rem=82 prio=1
+...
+
+[-t] will add dump scheduler state. e.g like below 
+
+./sched -sF -v -t input0 rfile
+0 0 0: CREATED -> READY
+SCHED (1):  0:0
+0 0 0: READY -> RUNNG cb=8 rem=100 prio=1
+8 0 8: RUNNG -> BLOCK  ib=2 rem=92
+SCHED (0): 
+10 0 2: BLOCK -> READY
+SCHED (1):  0:10
+10 0 0: READY -> RUNNG cb=10 rem=92 prio=1
+20 0 10: RUNNG -> BLOCK  ib=7 rem=82
+SCHED (0): 
+27 0 7: BLOCK -> READY
+...
+
+[-e] will dump event traces. e.g like below
+
+./sched -sF -v -e input0 rfile
+ShowEventQ: 0:0 500:1
+0 0 0: CREATED -> READY
+  AddEvent(0:0:RUNNG): 500:1:READY  ==> 0:0:RUNNG 500:1:READY 
+0 0 0: READY -> RUNNG cb=8 rem=100 prio=1
+  AddEvent(8:0:BLOCK): 500:1:READY  ==> 8:0:BLOCK 500:1:READY 
+8 0 8: RUNNG -> BLOCK  ib=2 rem=92
+  AddEvent(10:0:READY): 500:1:READY  ==> 10:0:READY 500:1:READY 
+10 0 2: BLOCK -> READY
+  AddEvent(10:0:RUNNG): 500:1:READY  ==> 10:0:RUNNG 500:1:READY 
+10 0 0: READY -> RUNNG cb=10 rem=92 prio=1
+  AddEvent(20:0:BLOCK): 500:1:READY  ==> 20:0:BLOCK 500:1:READY 
+20 0 10: RUNNG -> BLOCK  ib=7 rem=82
+...
+
+
+
+
